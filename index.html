@@ -254,6 +254,37 @@
   #cloudGateMessage{color:var(--warn);white-space:pre-wrap}
   #cloudConflicts{max-height:220px;overflow:auto;width:100%;border-top:1px solid var(--warn)}
   @media(max-width:1100px){.app{grid-template-columns:190px 1fr}.content{grid-template-columns:1fr}.main{overflow:auto}.topbar{flex-wrap:wrap}.card .bd{max-height:none}.content{overflow:visible}.kpi{grid-template-columns:1fr 1fr}}
+
+  .content.statistics-view{grid-template-columns:minmax(0,1.85fr) minmax(320px,.9fr)}
+  .stats-controls{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+  .stats-controls label{display:block;margin-bottom:5px}
+  .stats-kpis{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin:14px 0}
+  .stats-kpis .box{padding:14px;background:rgba(0,0,0,.2);border:1px solid var(--line);border-radius:14px}
+  .stats-kpis .n{font-size:22px;font-weight:800;margin:7px 0;overflow-wrap:anywhere}
+  .stats-kpis .l{font-size:12px;color:var(--muted)}
+  .stats-chart-card{padding:16px 12px;margin:16px 0;border:1px solid var(--line);border-radius:16px;background:rgba(0,0,0,.18)}
+  .stats-chart-scroll{overflow-x:auto;max-width:100%}.stats-svg{display:block;min-width:100%}
+  .stats-svg [data-chart-index]:focus{outline:none}.stats-svg [data-chart-index]:focus circle{stroke:white;stroke-width:3}
+  .stats-legend{display:flex;flex-wrap:wrap;gap:14px;font-size:12px;margin:4px 0 12px}
+  .stats-fx{margin:16px 0;padding:12px;border:1px solid var(--line);border-radius:12px}
+  .stats-fx summary{cursor:pointer;color:var(--orange2);font-size:13px}
+  .stats-client{display:block;width:100%;text-align:left;color:var(--text);border:1px solid var(--line);border-radius:12px;background:rgba(0,0,0,.15);padding:14px;margin:10px 0;cursor:pointer}
+  .stats-client:hover{border-color:var(--orange)}.stats-share{height:6px;border-radius:9px;background:var(--line);margin:10px 0}
+  .stats-share span{display:block;height:100%;background:linear-gradient(90deg,var(--orange),var(--orange2));border-radius:9px}
+  .btn:disabled{opacity:.5;cursor:wait}
+  @media(max-width:1200px){.content.statistics-view{grid-template-columns:minmax(0,1fr)}.stats-controls{grid-template-columns:repeat(2,minmax(0,1fr))}}
+  @media(max-width:650px){.stats-controls{grid-template-columns:1fr}.stats-kpis{grid-template-columns:1fr}}
+
+  .main,.content{min-height:0;min-width:0}
+  .search,.search input{min-width:0}
+  .content > .card{display:flex;flex-direction:column;min-height:0;min-width:0}
+  .content > .card > .hd{flex:0 0 auto;flex-wrap:wrap;gap:10px}
+  .content > .card > .bd{flex:1 1 auto;min-height:0;max-height:none;overflow:auto;overscroll-behavior:contain;overflow-anchor:none}
+  #rightCard > .hd{position:sticky;top:0;z-index:3;background:var(--panel)}
+  #invoiceActionBar{flex-wrap:nowrap}#invoiceActionBar .btn{padding:8px 10px;white-space:nowrap}
+  .invoice-filters{flex:0 0 auto;display:grid;grid-template-columns: .8fr 1fr 1fr;gap:10px;padding:12px 14px;border-bottom:1px solid var(--line);background:rgba(0,0,0,.15)}
+  .invoice-filters label{display:block;margin-bottom:5px}.invoice-filters input,.invoice-filters select{min-width:0}
+  @media(max-width:1100px){.content,.content.statistics-view{display:block;overflow:visible}.content > .card{display:block;overflow:visible;margin-bottom:14px}.content > .card > .bd{flex:none;overflow:auto;overscroll-behavior:auto}#rightCard > .hd{top:0}.invoice-filters{grid-template-columns:1fr 1fr}.invoice-filters>div:first-child{grid-column:1/-1}}
 </style>
 </head>
 <body>
@@ -300,9 +331,15 @@
         <div class="hd">
           <h2 id="leftHeader">INVOICES</h2>
           <div class="row">
-            <select id="filterClient" style="width:220px"></select>
+            <select id="filterClient" aria-label="Filter by client" style="width:220px"></select>
             <button class="btn" id="btnClearFilters">Clear</button>
           </div>
+        </div>
+        <div id="invoiceFilters" class="invoice-filters" hidden>
+          <div><label for="filterInvoiceYear">Year</label><select id="filterInvoiceYear"></select></div>
+          <div><label for="filterInvoiceFrom">From (issue date)</label><input id="filterInvoiceFrom" type="date"></div>
+          <div><label for="filterInvoiceTo">To (issue date)</label><input id="filterInvoiceTo" type="date"></div>
+          <div id="invoiceFilterHint" class="small muted" style="grid-column:1/-1"></div>
         </div>
         <div class="bd" id="leftBody"></div>
       </section>
@@ -313,6 +350,7 @@
           <h2 id="rightHeader">INVOICE EDITOR</h2>
           <div class="row">
             <span class="pill mono" id="selectedInvoicePill">—</span>
+            <div id="invoiceActionBar" class="row" hidden></div>
           </div>
         </div>
         <div class="bd" id="rightBody"></div>
@@ -372,7 +410,7 @@
   let deferredRender=false;
   function renderSharedChanges(force=false){
     const active=document.activeElement;
-    if(!force && active && active.closest('#rightBody') && ['INPUT','TEXTAREA','SELECT'].includes(active.tagName)){
+    if(!force && active && (active.closest('#rightBody') || (state.view==='dashboard' && active.closest('#leftBody'))) && ['INPUT','TEXTAREA','SELECT'].includes(active.tagName)){
       deferredRender=true;document.getElementById('cloudRefresh').hidden=false;return;
     }
     deferredRender=false;document.getElementById('cloudRefresh').hidden=true;
@@ -782,11 +820,36 @@
     return due < today;
   }
 
+  const invoiceListFilters={year:"all",from:"",to:""};
+  try{const saved=JSON.parse(localStorage.getItem('invoiceSuite.listFilters')||'{}');for(const k of Object.keys(invoiceListFilters))if(typeof saved[k]==='string')invoiceListFilters[k]=saved[k];}catch(e){}
+  function saveInvoiceFilters(){try{localStorage.setItem('invoiceSuite.listFilters',JSON.stringify(invoiceListFilters));}catch(e){}}
+  function invoiceMatchesDates(inv){
+    const {year,from,to}=invoiceListFilters,date=inv.issueDate||'';
+    if(year==='undated' && statsDate(date))return false;
+    if(year!=='all'&&year!=='undated'&&date.slice(0,4)!==year)return false;
+    if((from||to)&&!statsDate(date))return false;
+    return (!from||date>=from)&&(!to||date<=to);
+  }
+  function updateInvoiceSelectionForFilters(){
+    const visible=filteredInvoices();if(!visible.some(i=>i.id===state.selectedInvoiceId))state.selectedInvoiceId=visible[0]?.id||null;
+  }
+  function applyInvoiceListFilters(){saveInvoiceFilters();updateInvoiceSelectionForFilters();setView('invoices');}
+  function hydrateInvoiceFilters(){
+    const panel=document.getElementById('invoiceFilters');panel.hidden=state.view!=='invoices';if(panel.hidden)return;
+    const years=[...new Set(state.invoices.filter(i=>statsDate(i.issueDate)).map(i=>i.issueDate.slice(0,4)))].sort().reverse();
+    if(invoiceListFilters.year!=='all'&&invoiceListFilters.year!=='undated'&&!years.includes(invoiceListFilters.year))years.push(invoiceListFilters.year);
+    document.getElementById('filterInvoiceYear').innerHTML='<option value="all">All years</option>'+years.map(y=>`<option value="${escapeAttr(y)}">${escapeHtml(y)}</option>`).join('')+'<option value="undated">Undated invoices</option>';
+    document.getElementById('filterInvoiceYear').value=invoiceListFilters.year;
+    document.getElementById('filterInvoiceFrom').value=invoiceListFilters.from;
+    document.getElementById('filterInvoiceTo').value=invoiceListFilters.to;
+    document.getElementById('invoiceFilterHint').textContent=invoiceListFilters.from&&invoiceListFilters.to&&invoiceListFilters.from>invoiceListFilters.to?'From date must be on or before To date.':`${filteredInvoices().length} of ${state.invoices.length} invoices · issue dates · inclusive range`;
+  }
   function filteredInvoices(){
     const q = state.search.trim().toLowerCase();
     const fc = state.filterClientId;
     return state.invoices
       .filter(inv => fc==="all" ? true : inv.clientId === fc)
+      .filter(inv => state.view!=="invoices" || invoiceMatchesDates(inv))
       .filter(inv => {
         if (!q) return true;
         const client = state.clients.find(c => c.id === inv.clientId);
@@ -1215,12 +1278,20 @@ const headLeft = PAD + (logoObj ? (logoSize + 18) : 0);
   }
 
   function setView(view){
+    const sameView=state.view===view;
+    const oldLeftScroll=document.getElementById('leftBody').scrollTop;
+    const oldRightScroll=document.getElementById('rightBody').scrollTop;
+    const sameEditor=sameView && (view!=='invoices' || state._renderedInvoiceId===state.selectedInvoiceId);
+    const mainScroll=document.querySelector('.main').scrollTop;
     state.view = view;
+    document.querySelector(".content").classList.toggle("statistics-view",view==="dashboard");
+    document.getElementById("selectedInvoicePill").hidden=view==="dashboard";
+    document.getElementById("filterClient").hidden=view==="dashboard";
     // update nav active
     document.querySelectorAll(".nav button").forEach(b=>{
       b.classList.toggle("active", b.dataset.view === view);
     });
-    const titleMap = {dashboard:"Dashboard", invoices:"Invoices", clients:"Clients", settings:"Settings / Company", help:"Help"};
+    const titleMap = {dashboard:"Income statistics", invoices:"Invoices", clients:"Clients", settings:"Settings / Company", help:"Help"};
     document.getElementById("viewTitle").textContent = titleMap[view] || "Invoices";
 
     const leftHeader = document.getElementById("leftHeader");
@@ -1229,8 +1300,8 @@ const headLeft = PAD + (logoObj ? (logoSize + 18) : 0);
     const rightBody = document.getElementById("rightBody");
 
     if (view === "dashboard"){
-      leftHeader.textContent = "DASHBOARD";
-      rightHeader.textContent = "INCOME BREAKDOWN";
+      leftHeader.textContent = "INCOME TRENDS";
+      rightHeader.textContent = "CLIENTS & FINANCIAL SUMMARY";
       leftBody.innerHTML = renderDashboard();
       rightBody.innerHTML = renderIncomeBreakdown();
     } else if (view === "invoices"){
@@ -1256,8 +1327,16 @@ const headLeft = PAD + (logoObj ? (logoSize + 18) : 0);
     }
 
     hydrateFilterClient();
+    hydrateInvoiceFilters();
     updateSelectedPill();
-  postRender(view);
+    const actions=document.getElementById('invoiceActionBar');
+    actions.hidden=view!=='invoices'||!state.selectedInvoiceId;
+    actions.innerHTML=actions.hidden?'':'<button class="btn" id="btnDuplicateInvoice">Duplicate</button><button class="btn danger" id="btnDeleteInvoice">Delete invoice</button>';
+    postRender(view);
+    document.getElementById('leftBody').scrollTop=sameView?oldLeftScroll:0;
+    document.getElementById('rightBody').scrollTop=sameEditor?oldRightScroll:0;
+    document.querySelector('.main').scrollTop=sameEditor?mainScroll:0;
+    state._renderedInvoiceId=state.selectedInvoiceId;
   }
 
   function hydrateFilterClient(){
@@ -1558,10 +1637,7 @@ function updateSelectedPill(){
 
       <div class="row" style="justify-content:space-between">
         <div class="small muted">Changes save automatically. Check the sync bar for confirmation.</div>
-        <div class="right-actions">
-          <button class="btn" id="btnDuplicateInvoice">Duplicate</button>
-          <button class="btn danger" id="btnDeleteInvoice">Delete</button>
-        </div>
+
       </div>
 `;
   }
@@ -1683,7 +1759,7 @@ function updateSelectedPill(){
     bind("btnDeleteInvoice", "click", () => {
       if (!confirm("Delete this invoice?")) return;
       state.invoices = state.invoices.filter(x => x.id !== inv.id);
-      state.selectedInvoiceId = state.invoices[0]?.id || null;
+      state.selectedInvoiceId = filteredInvoices()[0]?.id || null;
       save(); setView("invoices");
       toast("Invoice deleted");
     });
@@ -1699,6 +1775,7 @@ function updateSelectedPill(){
     if (state.view === "invoices"){
       document.getElementById("leftBody").innerHTML = renderInvoicesTable();
       attachInvoicesTableHandlers();
+      hydrateInvoiceFilters();
       updateSelectedPill();
     }
   }
@@ -1961,58 +2038,116 @@ function updateSelectedPill(){
     });
   }
 
-  function renderDashboard(){
-    const invs=filteredInvoices().filter(i=>computeInvoiceStatus(i)!=="draft");
-    const currencies=[...new Set(invs.map(i=>i.currency||state.settings.defaultCurrency))];
-    const totals=(list,cur)=>{const rows=list.map(i=>({i,t:invoiceTotals(i)}));return `<td>${escapeHtml(cur)}</td><td>${list.length}</td><td>${fmtMoney(rows.reduce((s,x)=>s+x.t.subtotal,0),cur)}</td><td>${fmtMoney(rows.reduce((s,x)=>s+x.t.tax,0),cur)}</td><td>${fmtMoney(rows.reduce((s,x)=>s+x.t.total,0),cur)}</td><td>${fmtMoney(rows.reduce((s,x)=>s+x.t.paid,0),cur)}</td><td>${fmtMoney(rows.reduce((s,x)=>s+Math.max(0,x.t.balance),0),cur)}</td>`;};
-    const months=[...new Set(invs.map(i=>(i.issueDate||'').slice(0,7)))].sort().reverse();
-    return `<div class="hint">Company income statistics · matches search and client filter. Drafts excluded. Currencies remain separate. Net billed excludes tax; received includes tax and follows recorded payments.</div><h3>Totals by currency</h3><div style="overflow:auto"><table class="table"><thead><tr><th>Currency</th><th>Invoices</th><th>Net billed</th><th>Tax</th><th>Gross billed</th><th>Received</th><th>Outstanding</th></tr></thead><tbody>${currencies.map(cur=>`<tr>${totals(invs.filter(i=>(i.currency||state.settings.defaultCurrency)===cur),cur)}</tr>`).join('')||'<tr><td>No issued invoices.</td></tr>'}</tbody></table></div>
-    <h3>Monthly billing (issue date)</h3><div style="overflow:auto"><table class="table"><thead><tr><th>Month</th><th>Currency</th><th>Invoices</th><th>Net billed</th><th>Tax</th><th>Gross billed</th><th>Received against invoices</th><th>Outstanding</th></tr></thead><tbody>${months.flatMap(m=>currencies.map(cur=>{const list=invs.filter(i=>(i.issueDate||'').startsWith(m)&&(i.currency||state.settings.defaultCurrency)===cur);return list.length?`<tr><td>${escapeHtml(m||'Undated')}</td>${totals(list,cur)}</tr>`:'';})).join('')}</tbody></table></div>
-    <h3>Monthly cash received (payment date)</h3><table class="table"><thead><tr><th>Month</th><th>Currency</th><th>Received</th></tr></thead><tbody>${cashRows(invs)}</tbody></table>`;
-  }
-  function cashRows(invs){const groups=new Map();for(const i of invs)for(const p of i.payments||[]){const cur=i.currency||state.settings.defaultCurrency,key=(p.date||'Undated').slice(0,7)+'|'+cur;groups.set(key,(groups.get(key)||0)+parseNum(p.amount));}return [...groups].sort((a,b)=>b[0].localeCompare(a[0])).map(([k,v])=>{const [m,c]=k.split('|');return `<tr><td>${escapeHtml(m)}</td><td>${escapeHtml(c)}</td><td>${fmtMoney(v,c)}</td></tr>`;}).join('')||'<tr><td colspan="3" class="muted">No recorded payments.</td></tr>';}
-
-  function hydrateDashboardClicks(){
-    document.querySelectorAll("tr[data-inv]").forEach(tr=>{
-      tr.addEventListener("click", ()=>{
-        state.selectedInvoiceId = tr.getAttribute("data-inv");
-        save();
-        setView("invoices");
-      });
-    });
-  }
-
-  function renderIncomeBreakdown(){
-    // group by client + source for "where it's coming from"
-    const map = new Map();
-    for (const inv of filteredInvoices().filter(i=>computeInvoiceStatus(i)!=="draft")){
-      const c = state.clients.find(x=>x.id===inv.clientId);
-      const key = `${c?.name||"(no client)"}||${inv.source||"(no source)"}||${inv.what||"(no what)"}||${inv.currency||""}`;
-      const t = invoiceTotals(inv);
-      const cur = inv.currency || state.settings.defaultCurrency;
-      const v = map.get(key) || { client: c?.name||"(no client)", source: inv.source||"", what: inv.what||"", currency: cur, total:0, paid:0, balance:0, count:0 };
-      v.total += t.total; v.paid += t.paid; v.balance += t.balance; v.count += 1;
-      map.set(key, v);
+  // Reporting preferences and exchange rates belong to this browser, not the shared invoices.
+  const STATS_KEY='invoiceSuite.statistics.v1';
+  const statsPrefs={frequency:'month',currency:'NZD',metric:'net',range:'recent',start:'',end:'',chart:'line',compare:true,fx:null,overrides:{}};
+  try{const stored=JSON.parse(localStorage.getItem(STATS_KEY)||'{}');for(const k of Object.keys(statsPrefs))if(stored[k]!==undefined)statsPrefs[k]=stored[k];}catch(e){}
+  let statsFxBusy=false,statsFxError='',statsFxAttempted=false;
+  function persistStats(){try{localStorage.setItem(STATS_KEY,JSON.stringify(statsPrefs));}catch(e){toast('Could not save report preferences');}}
+  function statsDate(iso){if(!/^\d{4}-\d{2}-\d{2}$/.test(iso||''))return false;const d=new Date(iso+'T00:00:00Z');return !isNaN(d)&&d.toISOString().slice(0,10)===iso;}
+  function isoUtc(y,m,d=1){return new Date(Date.UTC(y,m,d)).toISOString().slice(0,10);}
+  function bucketBounds(key,freq=statsPrefs.frequency){const [y,m]=key.split('-').map(Number);return freq==='year'?{start:isoUtc(y,0),end:isoUtc(y+1,0,0)}:{start:isoUtc(y,m-1),end:isoUtc(y,m,0)};}
+  function periodKey(iso){return iso.slice(0,statsPrefs.frequency==='year'?4:7);}
+  function shiftKey(key,amount,year=false){const [y,m]=key.split('-').map(Number);return statsPrefs.frequency==='year'?String(y+amount):isoUtc(y+(year?amount:0),(m-1)+(year?0:amount)).slice(0,7);}
+  function reportRate(from,to=statsPrefs.currency){if(from===to)return 1;const manual=Number(statsPrefs.overrides?.[from+'_'+to]);if(manual>0&&Number.isFinite(manual))return manual;const rates=statsPrefs.fx?.rates;const a=Number(rates?.[from]),b=Number(rates?.[to]);return a>0&&b>0&&isFinite(a)&&isFinite(b)?b/a:null;}
+  function reportMoney(value){return fmtMoney(value,statsPrefs.currency);}
+  function metricLabel(){return {net:'Net billed (excl. tax)',gross:'Gross billed (incl. tax)',cash:'Payments received (incl. tax)'}[statsPrefs.metric]||'Net billed (excl. tax)';}
+  function incomeEvents(){
+    const invoices=filteredInvoices().filter(i=>computeInvoiceStatus(i)!=='draft');const events=[],invalid=new Set(),missing=new Set();
+    for(const inv of invoices){const cur=inv.currency||state.settings.defaultCurrency||'NZD',rate=reportRate(cur),t=invoiceTotals(inv);if(rate===null)missing.add(cur);
+      if(statsDate(inv.issueDate))events.push({date:inv.issueDate,net:t.subtotal*(rate||0),gross:t.total*(rate||0),tax:t.tax*(rate||0),cash:0,invoice:inv,kind:'billed'});else invalid.add(inv.id);
+      for(const pay of inv.payments||[]){if(statsDate(pay.date))events.push({date:pay.date,net:0,gross:0,tax:0,cash:parseNum(pay.amount)*(rate||0),invoice:inv,kind:'payment'});else invalid.add(inv.id);}
     }
-    const rows = [...map.values()].sort((a,b)=> b.balance - a.balance).slice(0, 80).map(v => `
-      <tr>
-        <td>${escapeHtml(v.client)}</td>
-        <td>${escapeHtml(v.source)}</td>
-        <td>${escapeHtml(v.what)}</td>
-        <td class="mono">${escapeHtml(v.currency)}</td>
-        <td class="mono">${escapeHtml(fmtMoney(v.total, v.currency))}</td>
-        <td class="mono">${escapeHtml(fmtMoney(v.paid, v.currency))}</td>
-        <td class="mono">${escapeHtml(fmtMoney(v.balance, v.currency))}</td>
-      </tr>
-    `).join("");
-    return `
-      <div class="hint">Breakdown by <b>client + project/source + what</b>. Shows totals, paid, and outstanding balance.</div>
-      <div class="sep"></div>
-      <table class="table">
-        <thead><tr><th>Client</th><th>Project/Source</th><th>What</th><th>Cur</th><th>Total</th><th>Paid</th><th>Balance</th></tr></thead>
-        <tbody>${rows || `<tr><td colspan="7" class="muted">No data.</td></tr>`}</tbody>
-      </table>
-    `;
+    return {invoices,events,invalid,missing};
+  }
+  function reportWindow(events){
+    const now=todayISO(),y=Number(now.slice(0,4)),m=Number(now.slice(5,7));
+    if(statsPrefs.range==='custom')return {start:statsPrefs.start||isoUtc(y,0),end:statsPrefs.end||now};
+    if(statsPrefs.range==='year')return {start:isoUtc(y,0),end:now};
+    if(statsPrefs.range==='all'){const dates=events.map(e=>e.date).sort();const first=dates[0]||now,last=dates.at(-1)||now;return {start:bucketBounds(periodKey(first)).start,end:last>now?bucketBounds(periodKey(last)).end:now};}
+    return {start:statsPrefs.frequency==='year'?isoUtc(y-4,0):isoUtc(y,m-12),end:now};
+  }
+  function pctChange(value,previous){if(Math.abs(previous)<1e-9)return Math.abs(value)<1e-9?{text:'—',label:'No activity in either period',direction:0}:{text:'New',label:'No income in comparison period',direction:Math.sign(value)};const pct=(value-previous)/Math.abs(previous)*100;return {text:(pct>0?'+':'')+pct.toFixed(1)+'%',label:'Compared with '+reportMoney(previous),direction:Math.sign(pct)};}
+  function comparisonWindow(key,rowEnd,rowStart,kind){
+    const target=shiftKey(key,-1,kind==='year');const bounds=bucketBounds(target);const original=bucketBounds(key);
+    if(rowStart!==original.start)return null;
+    if(rowEnd===original.end)return bounds;
+    if(key!==periodKey(todayISO()))return null;
+    // Compare the same number of elapsed calendar days/months, clamped for shorter months/leap years.
+    if(statsPrefs.frequency==='month'){const day=Math.min(Number(rowEnd.slice(8)),Number(bounds.end.slice(8)));return {start:bounds.start,end:target+'-'+String(day).padStart(2,'0')};}
+    const yy=Number(target),mm=Number(rowEnd.slice(5,7)),dd=Math.min(Number(rowEnd.slice(8)),Number(isoUtc(yy,mm,0).slice(8)));return {start:bounds.start,end:isoUtc(yy,mm-1,dd)};
+  }
+  function statisticsModel(){
+    const source=incomeEvents(),window=reportWindow(source.events),valid=statsDate(window.start)&&statsDate(window.end)&&window.start<=window.end;
+    const sum=(a,b,k=statsPrefs.metric)=>source.events.filter(e=>e.date>=a&&e.date<=b).reduce((s,e)=>s+e[k],0);
+    const buckets=[];if(valid){let key=periodKey(window.start),last=periodKey(window.end);let guard=0;while(key<=last&&guard++<2400){const bounds=bucketBounds(key),start=window.start>bounds.start?window.start:bounds.start,end=window.end<bounds.end?window.end:bounds.end;
+      const prev=comparisonWindow(key,end,start,'period'),prevYear=comparisonWindow(key,end,start,'year');
+      const value=sum(start,end),previous=prev?sum(prev.start,prev.end):null,yearValue=prevYear?sum(prevYear.start,prevYear.end):null;
+      buckets.push({key,start,end,value,previous,yearValue,change:previous===null?null:pctChange(value,previous),partial:start>bounds.start||end<bounds.end,count:new Set(source.events.filter(e=>e.kind==='billed'&&e.date>=start&&e.date<=end).map(e=>e.invoice.id)).size});key=shiftKey(key,1);}}
+    const selected=valid?source.events.filter(e=>e.date>=window.start&&e.date<=window.end):[];
+    const billed=source.invoices.filter(i=>statsDate(i.issueDate)&&i.issueDate>=window.start&&i.issueDate<=window.end);
+    const outstanding=billed.reduce((s,i)=>s+Math.max(0,invoiceTotals(i).balance)*(reportRate(i.currency||state.settings.defaultCurrency)||0),0);
+    const overdue=billed.filter(i=>statsDate(i.dueDate)&&i.dueDate<todayISO()).reduce((s,i)=>s+Math.max(0,invoiceTotals(i).balance)*(reportRate(i.currency||state.settings.defaultCurrency)||0),0);
+    const clients=new Map();for(const e of selected){const key=e.invoice.clientId||'unassigned';const r=clients.get(key)||{id:key,name:state.clients.find(c=>c.id===key)?.name||'(unassigned)',value:0,invoices:new Set()};r.value+=e[statsPrefs.metric];if(e.kind==='billed')r.invoices.add(e.invoice.id);clients.set(key,r);}
+    const totals={net:0,gross:0,cash:0,tax:0};for(const e of selected)for(const k of Object.keys(totals))totals[k]+=e[k];
+    return {...source,window,valid,buckets,selected,billed,outstanding,overdue,clients:[...clients.values()].sort((a,b)=>b.value-a.value),totals,incomplete:source.missing.size>0,sum};
+  }
+  function statsPeriodLabel(key){if(statsPrefs.frequency==='year')return key;const [y,m]=key.split('-').map(Number);return new Date(Date.UTC(y,m-1,1)).toLocaleDateString('en-GB',{month:'short',year:'numeric',timeZone:'UTC'});}
+  function incomeChart(model){
+    if(!model.valid)return '<div class="hint">Choose a valid date range.</div>';
+    if(model.incomplete)return '<div class="hint">Add or refresh exchange rates below to show a complete unified-currency chart. Missing: '+[...model.missing].map(escapeHtml).join(', ')+'.</div>';
+    const rows=model.buckets;if(!rows.length)return '<div class="hint">No periods to display.</div>';
+    const width=Math.max(760,rows.length*72+80),height=330,left=76,right=20,top=24,bottom=62,plotW=width-left-right,plotH=height-top-bottom;
+    const vals=rows.flatMap(r=>[r.value,...(statsPrefs.compare&&r.yearValue!==null?[r.yearValue]:[])]);let min=Math.min(0,...vals),max=Math.max(0,...vals);if(max===min)max=min+1;const span=max-min,pad=span*.1;max+=pad;if(min<0)min-=pad;
+    const y=v=>top+(max-v)/(max-min)*plotH,x=i=>left+(i+.5)*plotW/rows.length,zero=y(0),money=v=>statsPrefs.currency+' '+new Intl.NumberFormat('en',{notation:'compact',maximumFractionDigits:1}).format(v);
+    let grid='';for(let i=0;i<=4;i++){const v=min+(max-min)*i/4,yy=y(v);grid+=`<line x1="${left}" x2="${width-right}" y1="${yy}" y2="${yy}" stroke="#343943"/><text x="${left-10}" y="${yy+4}" text-anchor="end" fill="#a8b0bb" font-size="11">${escapeHtml(money(v))}</text>`;}
+    const prevPoints=rows.map((r,i)=>r.yearValue===null?null:`${x(i)},${y(r.yearValue)}`),mainPoints=rows.map((r,i)=>`${x(i)},${y(r.value)}`).join(' ');
+    let previous='';if(statsPrefs.compare){let chunk=[];for(const point of [...prevPoints,null]){if(point)chunk.push(point);else if(chunk.length){previous+=`<polyline points="${chunk.join(' ')}" fill="none" stroke="#aaa0ff" stroke-width="2" stroke-dasharray="5 5"/>`;chunk=[];}}}
+    if(statsPrefs.compare)rows.forEach((r,i)=>{if(r.yearValue!==null)previous+=`<circle cx="${x(i)}" cy="${y(r.yearValue)}" r="3" fill="#aaa0ff"/>`;});
+    let marks=statsPrefs.chart==='line'?`<polyline points="${mainPoints}" fill="none" stroke="#ff9a3c" stroke-width="3" stroke-linejoin="round"/>`:'';
+    rows.forEach((r,i)=>{const xx=x(i),yy=y(r.value),barW=Math.min(36,plotW/rows.length*.6),tip=statsPeriodLabel(r.key)+(r.partial?' (partial)':'')+': '+reportMoney(r.value)+(r.yearValue!==null?' | Previous year: '+reportMoney(r.yearValue):'');marks+=`<g tabindex="0" role="img" aria-label="${escapeAttr(tip)}" data-chart-index="${i}"><title>${escapeHtml(tip)}</title>${statsPrefs.chart==='bar'?`<rect x="${xx-barW/2}" y="${Math.min(yy,zero)}" width="${barW}" height="${Math.max(1,Math.abs(zero-yy))}" rx="3" fill="#f27d0c" opacity="${r.partial?.65:1}"/>`:`<circle cx="${xx}" cy="${yy}" r="5" fill="#ff9a3c"/>`}<rect x="${xx-plotW/rows.length/2}" y="${top}" width="${plotW/rows.length}" height="${plotH}" fill="transparent"/></g>`;});
+    const labels=rows.map((r,i)=>`<text x="${x(i)}" y="${height-30}" text-anchor="middle" fill="#a8b0bb" font-size="10">${escapeHtml(statsPeriodLabel(r.key))}</text>${r.partial?`<text x="${x(i)}" y="${height-15}" text-anchor="middle" fill="#f5c451" font-size="9">partial</text>`:''}`).join('');
+    return `<div class="stats-chart-scroll"><svg class="stats-svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeAttr(metricLabel()+' by '+statsPrefs.frequency+' in '+statsPrefs.currency)}"><title>${escapeHtml(metricLabel())}</title>${grid}${previous}${marks}${labels}</svg></div><div class="stats-legend"><span style="color:var(--orange2)">● ${escapeHtml(metricLabel())}</span>${statsPrefs.compare?'<span style="color:#aaa0ff">┄ Same period previous year</span>':''}<span class="muted">Hover or focus a point for exact values</span></div><div id="statsPointInfo" class="hint" aria-live="polite">${escapeHtml(statsPrefs.frequency==='month'?'Monthly':'Yearly')} income · missing periods are shown as zero activity.</div>`;
+  }
+  function renderDashboard(){
+    const m=statisticsModel(),amount=v=>m.incomplete?'—':escapeHtml(reportMoney(v));
+    const best=m.buckets.filter(b=>b.value!==0).reduce((a,b)=>!a||b.value>a.value?b:a,null),last=m.buckets.at(-1),change=last?.change;
+    const options=(pairs,value)=>pairs.map(([k,label])=>`<option value="${escapeAttr(k)}" ${k===value?'selected':''}>${escapeHtml(label)}</option>`).join('');
+    const fxDate=statsPrefs.fx?.date||'not loaded',manualCount=Object.keys(statsPrefs.overrides||{}).filter(k=>k.endsWith('_'+statsPrefs.currency)).length;
+    return `<div class="stats-controls"><div><label>View</label><select id="statFrequency">${options([['month','Monthly'],['year','Yearly']],statsPrefs.frequency)}</select></div><div><label>Income measure</label><select id="statMetric">${options([['net','Net billed · excl. tax'],['gross','Gross billed · incl. tax'],['cash','Payments received · incl. tax']],statsPrefs.metric)}</select></div><div><label>Reporting currency</label><select id="statCurrency">${options(Object.keys(currencySymbols).map(c=>[c,c]),statsPrefs.currency)}</select></div><div><label>Client</label><select id="statClient">${options([['all','All clients'],...state.clients.map(c=>[c.id,c.name||'(unnamed)'])],state.filterClientId)}</select></div><div><label>Date range</label><select id="statRange">${options([['recent',statsPrefs.frequency==='month'?'Last 12 months':'Last 5 years'],['year','Current year to date'],['all','All history'],['custom','Custom dates']],statsPrefs.range)}</select></div><div><label>Chart style</label><select id="statChart">${options([['line','Line'],['bar','Columns']],statsPrefs.chart)}</select></div></div>
+    ${statsPrefs.range==='custom'?`<div class="grid2" style="margin-top:10px"><div><label>From</label><input id="statStart" type="date" value="${escapeAttr(m.window.start)}"></div><div><label>To</label><input id="statEnd" type="date" value="${escapeAttr(m.window.end)}"></div></div>`:''}
+    <div class="row" style="justify-content:space-between;margin:12px 0"><label><input id="statCompare" type="checkbox" style="width:auto" ${statsPrefs.compare?'checked':''}> Compare with previous year</label><button class="btn" id="statCsv" ${m.incomplete||!m.valid?'disabled':''}>Export report CSV</button></div>
+    <div class="stats-kpis"><div class="box"><div class="l">${escapeHtml(metricLabel())}</div><div class="n">${amount(m.totals[statsPrefs.metric])}</div><div class="small muted">${escapeHtml(m.window.start)} → ${escapeHtml(m.window.end)}</div></div><div class="box"><div class="l">Latest period vs previous ${statsPrefs.frequency}</div><div class="n" style="color:${change?.direction>0?'var(--good)':change?.direction<0?'var(--bad)':'var(--muted)'}">${m.incomplete?'—':escapeHtml(change?.text||'—')}</div><div class="small muted">${last?escapeHtml(statsPeriodLabel(last.key)+(last.partial?' · partial':'')):'No data'}</div></div><div class="box"><div class="l">Outstanding · selected invoices</div><div class="n">${amount(m.outstanding)}</div><div class="small muted">Overdue: ${amount(m.overdue)}</div></div><div class="box"><div class="l">Best period in range</div><div class="n">${best&&!m.incomplete?escapeHtml(statsPeriodLabel(best.key)):'—'}</div><div class="small muted">${best?amount(best.value):'—'}${best?.partial?' · partial':''}</div></div></div>
+    <div class="stats-chart-card"><h3 style="margin:0 0 10px">${escapeHtml(statsPrefs.frequency==='month'?'Monthly':'Yearly')} company income <span class="muted small">${escapeHtml(statsPrefs.currency)}</span></h3>${incomeChart(m)}</div>
+    <div class="hint">Drafts excluded. Billed income follows invoice issue dates; received income follows payment dates. No recorded payment means no received income. Current partial periods compare the same elapsed dates. Custom partial periods have no growth comparison. Search and client filters apply to everything below.</div>
+    ${m.invalid.size?`<div class="hint" style="margin-top:8px;color:var(--warn)">${m.invalid.size} invoice(s) contain missing or invalid invoice/payment dates; those dated events are excluded.</div>`:''}
+    <details class="stats-fx" ${m.incomplete||statsFxError?'open':''}><summary>Exchange rates · ${escapeHtml(fxDate)}${manualCount?' · '+manualCount+' manual override(s)':''}</summary><p class="small muted">One fixed rate snapshot is applied to all periods, keeping the trend comparable. Invoices keep their original currencies. Reporting conversion is an estimate, not historical accounting conversion. Rates and report preferences are saved in this browser.</p><div class="row"><button class="btn" id="statFxRefresh" ${statsFxBusy?'disabled':''}>${statsFxBusy?'Loading rates…':'Refresh reference rates'}</button><button class="btn" id="statFxReset">Clear manual overrides</button><span class="small muted">ECB reference rates via Frankfurter</span></div>${statsFxError?`<p style="color:var(--warn)">${escapeHtml(statsFxError)}</p>`:''}<div class="stats-controls" style="margin-top:12px">${[...new Set(m.invoices.map(i=>i.currency||state.settings.defaultCurrency||'NZD'))].filter(c=>c!==statsPrefs.currency).map(c=>`<div><label>1 ${escapeHtml(c)} = ${escapeHtml(statsPrefs.currency)}</label><input type="number" min="0.00000001" step="any" data-fx-from="${escapeAttr(c)}" value="${reportRate(c)??''}" placeholder="Enter rate"><span class="small muted">${statsPrefs.overrides?.[c+'_'+statsPrefs.currency]?'Manual':'Reference'}</span></div>`).join('')}</div><button class="btn" id="statFxApply" style="margin-top:10px">Apply edited rates</button></details>
+    <h3>Period details</h3><div style="overflow:auto"><table class="table"><thead><tr><th>Period</th><th>Income (${escapeHtml(statsPrefs.currency)})</th><th>vs previous period</th><th>Previous year</th><th>Invoices issued</th></tr></thead><tbody>${m.buckets.slice().reverse().map(r=>`<tr><td>${escapeHtml(statsPeriodLabel(r.key))}${r.partial?' <span class="tag draft">Partial</span>':''}</td><td class="mono">${amount(r.value)}</td><td style="color:${r.change?.direction>0?'var(--good)':r.change?.direction<0?'var(--bad)':'var(--muted)'}" title="${escapeAttr(r.change?.label||'Comparison unavailable')}">${m.incomplete?'—':escapeHtml(r.change?.text||'—')}</td><td class="mono">${r.yearValue===null?'—':amount(r.yearValue)}</td><td>${r.count}</td></tr>`).join('')||'<tr><td colspan="5">No data.</td></tr>'}</tbody></table></div>`;
+  }
+  function renderIncomeBreakdown(){
+    const m=statisticsModel(),money=v=>m.incomplete?'—':escapeHtml(reportMoney(v)),total=m.totals[statsPrefs.metric];
+    const cards=[['Net billed',m.totals.net],['Tax billed',m.totals.tax],['Gross billed',m.totals.gross],['Payments received',m.totals.cash]];
+    return `<div class="hint">${escapeHtml(metricLabel())} · ${escapeHtml(statsPrefs.currency)} · ${escapeHtml(m.window.start)} → ${escapeHtml(m.window.end)}</div><h3>Financial summary</h3><div class="stats-kpis" style="grid-template-columns:1fr 1fr">${cards.map(([label,value])=>`<div class="box"><div class="l">${label}</div><div class="n">${money(value)}</div></div>`).join('')}</div><p class="small muted">${m.billed.length} invoices issued in range · average net invoice: ${m.billed.length?money(m.totals.net/m.billed.length):'—'}</p><h3>Income by client</h3>${m.clients.filter(c=>c.value!==0).map(c=>{const share=total>0?c.value/total*100:0;return `<button class="stats-client" data-stat-client="${escapeAttr(c.id)}" ${c.id==='unassigned'?'disabled':''}><div class="row" style="justify-content:space-between"><strong>${escapeHtml(c.name)}</strong><span class="mono">${money(c.value)}</span></div><div class="stats-share"><span style="width:${Math.min(100,Math.abs(share))}%"></span></div><div class="small muted">${m.incomplete?'—':share.toFixed(1)+'%'} of selected income</div></button>`;}).join('')||'<div class="hint">No income for this measure in the selected period.</div>'}
+    <h3>Invoices issued in range</h3><div style="overflow:auto"><table class="table"><thead><tr><th>Invoice / client</th><th>Net (${escapeHtml(statsPrefs.currency)})</th><th>Balance</th></tr></thead><tbody>${m.billed.slice().sort((a,b)=>(b.issueDate||'').localeCompare(a.issueDate||'')).map(i=>{const t=invoiceTotals(i),rate=reportRate(i.currency||state.settings.defaultCurrency);return `<tr data-inv="${escapeAttr(i.id)}" style="cursor:pointer"><td><strong>${escapeHtml(i.number)}</strong><div class="small muted">${escapeHtml(state.clients.find(c=>c.id===i.clientId)?.name||'(unassigned)')}</div><div class="small muted">${escapeHtml(i.issueDate)} · ${escapeHtml(i.currency)}</div></td><td>${rate===null?'—':money(t.subtotal*rate)}</td><td>${rate===null?'—':money(Math.max(0,t.balance)*rate)}</td></tr>`;}).join('')||'<tr><td colspan="3">No issued invoices in range.</td></tr>'}</tbody></table></div>`;
+  }
+  async function refreshStatsRates(){
+    if(statsFxBusy)return;statsFxBusy=true;statsFxError='';statsFxAttempted=true;if(state.view==='dashboard')setView('dashboard');
+    try{const response=await fetch('https://api.frankfurter.dev/v2/providers/ecb/rates?base=EUR&quotes=NZD,HUF,GBP,USD,AUD,CAD',{signal:AbortSignal.timeout(12000)});if(!response.ok)throw Error('Exchange-rate service returned '+response.status);const data=await response.json();if(!Array.isArray(data)||!data.length)throw Error('No reference rates returned');const rates={EUR:1},dates=[];for(const r of data){if(r.base==='EUR'&&r.rate>0&&isFinite(r.rate)){rates[r.quote]=r.rate;dates.push(r.date);}}if(Object.keys(currencySymbols).some(c=>!rates[c]))throw Error('Reference rates are incomplete; existing rates were kept.');statsPrefs.fx={base:'EUR',rates,date:dates.sort()[0],source:'ECB / Frankfurter',fetchedAt:new Date().toISOString()};persistStats();}
+    catch(e){statsFxError='Could not refresh exchange rates. Saved or manual rates still work. '+(e.message||'Check your connection.');}
+    finally{statsFxBusy=false;if(state.view==='dashboard')setView('dashboard');}
+  }
+  function hydrateDashboardClicks(){
+    for(const [id,key] of [['statFrequency','frequency'],['statMetric','metric'],['statCurrency','currency'],['statRange','range'],['statChart','chart'],['statStart','start'],['statEnd','end']])bind(id,'change',e=>{statsPrefs[key]=e.target.value;persistStats();setView('dashboard');});
+    bind('statClient','change',e=>{state.filterClientId=e.target.value;setView('dashboard');});
+    bind('statCompare','change',e=>{statsPrefs.compare=e.target.checked;persistStats();setView('dashboard');});
+    bind('statFxRefresh','click',refreshStatsRates);
+    bind('statFxReset','click',()=>{statsPrefs.overrides={};persistStats();setView('dashboard');});
+    bind('statFxApply','click',()=>{const entries=[...document.querySelectorAll('[data-fx-from]')];for(const input of entries)if(!(Number(input.value)>0&&isFinite(Number(input.value)))){toast('Enter a positive exchange rate for each currency.');return;}for(const input of entries){const from=input.dataset.fxFrom,reference=(statsPrefs.fx?.rates?.[statsPrefs.currency]||0)/(statsPrefs.fx?.rates?.[from]||0),value=Number(input.value),key=from+'_'+statsPrefs.currency;if(Math.abs(value-reference)<1e-10)delete statsPrefs.overrides[key];else statsPrefs.overrides[key]=value;}persistStats();setView('dashboard');});
+    document.querySelectorAll('[data-stat-client]').forEach(btn=>btn.addEventListener('click',()=>{state.filterClientId=btn.dataset.statClient;setView('dashboard');}));
+    document.querySelectorAll('tr[data-inv]').forEach(tr=>tr.addEventListener('click',()=>{state.selectedInvoiceId=tr.getAttribute('data-inv');setView('invoices');}));
+    const info=document.getElementById('statsPointInfo'),model=statisticsModel();document.querySelectorAll('[data-chart-index]').forEach(el=>{const show=()=>{const r=model.buckets[Number(el.dataset.chartIndex)];if(info&&r)info.textContent=statsPeriodLabel(r.key)+(r.partial?' (partial)':'')+' · '+reportMoney(r.value)+(r.previous===null?'':' · Previous period: '+reportMoney(r.previous))+(r.yearValue===null?'':' · Previous year: '+reportMoney(r.yearValue));};el.addEventListener('mouseenter',show);el.addEventListener('focus',show);});
+    bind('statCsv','click',()=>{const m=statisticsModel();if(m.incomplete||!m.valid)return;const csvCell=v=>'"'+String(v??'').replace(/"/g,'""')+'"';const rows=[['Period','From','To','Currency','Measure','Income','Previous period','Change','Previous year','Invoices issued','Partial','FX snapshot','Manual overrides'],...m.buckets.map(r=>[r.key,r.start,r.end,statsPrefs.currency,metricLabel(),r.value.toFixed(2),r.previous===null?'':r.previous.toFixed(2),r.change?.text||'',r.yearValue===null?'':r.yearValue.toFixed(2),r.count,r.partial?'yes':'no',statsPrefs.fx?.date||'manual',JSON.stringify(statsPrefs.overrides)])];downloadBlob('\ufeff'+rows.map(r=>r.map(csvCell).join(',')).join('\r\n'),'text/csv;charset=utf-8','income_'+statsPrefs.frequency+'_'+statsPrefs.currency+'_'+todayISO()+'.csv');});
+    if(!statsPrefs.fx&&!statsFxAttempted&&!statsFxBusy)setTimeout(()=>refreshStatsRates(),0);
   }
 
   function renderHelp(){
@@ -2064,21 +2199,25 @@ function updateSelectedPill(){
     document.getElementById("btnClearFilters").addEventListener("click", ()=>{
       state.filterClientId = "all";
       state.search = "";
+      invoiceListFilters.year='all';invoiceListFilters.from='';invoiceListFilters.to='';saveInvoiceFilters();
       document.getElementById("searchInput").value = "";
+      if(state.view==='invoices')updateInvoiceSelectionForFilters();
       setView(state.view);
     });
 
     document.getElementById("filterClient").addEventListener("change", (e)=>{
       state.filterClientId = e.target.value;
-      if (state.view === "invoices") setView("invoices");
+      if (state.view === "invoices") applyInvoiceListFilters();
       if (state.view === "dashboard") setView("dashboard");
     });
+    for(const [id,key]of [['filterInvoiceYear','year'],['filterInvoiceFrom','from'],['filterInvoiceTo','to']])bind(id,'change',e=>{invoiceListFilters[key]=e.target.value;applyInvoiceListFilters();});
 
     document.getElementById("btnNewInvoice").addEventListener("click", ()=>{
       const inv = newInvoice();
       if (!inv.clientId && state.clients[0]) inv.clientId = state.clients[0].id;
       state.invoices.push(inv);
       state.selectedInvoiceId = inv.id;
+      invoiceListFilters.year="all";invoiceListFilters.from="";invoiceListFilters.to="";saveInvoiceFilters();
       state.filterClientId = "all";
       save();
       setView("invoices");
