@@ -2055,11 +2055,26 @@ function updateSelectedPill(){
   function reportRate(from,to=statsPrefs.currency){if(from===to)return 1;const manual=Number(statsPrefs.overrides?.[from+'_'+to]);if(manual>0&&Number.isFinite(manual))return manual;const rates=statsPrefs.fx?.rates;const a=Number(rates?.[from]),b=Number(rates?.[to]);return a>0&&b>0&&isFinite(a)&&isFinite(b)?b/a:null;}
   function reportMoney(value){return fmtMoney(value,statsPrefs.currency);}
   function metricLabel(){return {net:'Net billed (excl. tax)',gross:'Gross billed (incl. tax)',cash:'Payments received (incl. tax)'}[statsPrefs.metric]||'Net billed (excl. tax)';}
+  function reportingPayments(inv){
+    const payments=inv.payments||[];
+    if(inv.statusOverride==='outstanding')return [];
+    if(inv.statusOverride!=='paid')return payments;
+    const total=invoiceTotals(inv).total;
+    const paid=payments.reduce((sum,p)=>sum+parseNum(p.amount),0);
+    const remaining=Math.max(0,total-paid);
+    const dates=payments.map(p=>p.date).filter(statsDate).sort();
+    return remaining>0 ? [...payments,{date:dates.at(-1)||inv.issueDate,amount:remaining}] : payments;
+  }
+  function reportingBalance(inv){
+    if(computeInvoiceStatus(inv)==='paid')return 0;
+    const t=invoiceTotals(inv);
+    return Math.max(0,inv.statusOverride==='outstanding'?t.total:t.balance);
+  }
   function incomeEvents(){
     const invoices=filteredInvoices().filter(i=>computeInvoiceStatus(i)!=='draft');const events=[],invalid=new Set(),missing=new Set();
     for(const inv of invoices){const cur=inv.currency||state.settings.defaultCurrency||'NZD',rate=reportRate(cur),t=invoiceTotals(inv);if(rate===null)missing.add(cur);
       if(statsDate(inv.issueDate))events.push({date:inv.issueDate,net:t.subtotal*(rate||0),gross:t.total*(rate||0),tax:t.tax*(rate||0),cash:0,invoice:inv,kind:'billed'});else invalid.add(inv.id);
-      for(const pay of inv.payments||[]){if(statsDate(pay.date))events.push({date:pay.date,net:0,gross:0,tax:0,cash:parseNum(pay.amount)*(rate||0),invoice:inv,kind:'payment'});else invalid.add(inv.id);}
+      for(const pay of reportingPayments(inv)){if(statsDate(pay.date))events.push({date:pay.date,net:0,gross:0,tax:0,cash:parseNum(pay.amount)*(rate||0),invoice:inv,kind:'payment'});else invalid.add(inv.id);}
     }
     return {invoices,events,invalid,missing};
   }
@@ -2089,8 +2104,8 @@ function updateSelectedPill(){
       buckets.push({key,start,end,value,previous,yearValue,change:previous===null?null:pctChange(value,previous),partial:start>bounds.start||end<bounds.end,count:new Set(source.events.filter(e=>e.kind==='billed'&&e.date>=start&&e.date<=end).map(e=>e.invoice.id)).size});key=shiftKey(key,1);}}
     const selected=valid?source.events.filter(e=>e.date>=window.start&&e.date<=window.end):[];
     const billed=source.invoices.filter(i=>statsDate(i.issueDate)&&i.issueDate>=window.start&&i.issueDate<=window.end);
-    const outstanding=billed.reduce((s,i)=>s+Math.max(0,invoiceTotals(i).balance)*(reportRate(i.currency||state.settings.defaultCurrency)||0),0);
-    const overdue=billed.filter(i=>statsDate(i.dueDate)&&i.dueDate<todayISO()).reduce((s,i)=>s+Math.max(0,invoiceTotals(i).balance)*(reportRate(i.currency||state.settings.defaultCurrency)||0),0);
+    const outstanding=billed.reduce((s,i)=>s+reportingBalance(i)*(reportRate(i.currency||state.settings.defaultCurrency)||0),0);
+    const overdue=billed.filter(i=>statsDate(i.dueDate)&&i.dueDate<todayISO()).reduce((s,i)=>s+reportingBalance(i)*(reportRate(i.currency||state.settings.defaultCurrency)||0),0);
     const clients=new Map();for(const e of selected){const key=e.invoice.clientId||'unassigned';const r=clients.get(key)||{id:key,name:state.clients.find(c=>c.id===key)?.name||'(unassigned)',value:0,invoices:new Set()};r.value+=e[statsPrefs.metric];if(e.kind==='billed')r.invoices.add(e.invoice.id);clients.set(key,r);}
     const totals={net:0,gross:0,cash:0,tax:0};for(const e of selected)for(const k of Object.keys(totals))totals[k]+=e[k];
     return {...source,window,valid,buckets,selected,billed,outstanding,overdue,clients:[...clients.values()].sort((a,b)=>b.value-a.value),totals,incomplete:source.missing.size>0,sum};
@@ -2122,7 +2137,7 @@ function updateSelectedPill(){
     <div class="row" style="justify-content:space-between;margin:12px 0"><label><input id="statCompare" type="checkbox" style="width:auto" ${statsPrefs.compare?'checked':''}> Compare with previous year</label><button class="btn" id="statCsv" ${m.incomplete||!m.valid?'disabled':''}>Export report CSV</button></div>
     <div class="stats-kpis"><div class="box"><div class="l">${escapeHtml(metricLabel())}</div><div class="n">${amount(m.totals[statsPrefs.metric])}</div><div class="small muted">${escapeHtml(m.window.start)} → ${escapeHtml(m.window.end)}</div></div><div class="box"><div class="l">Latest period vs previous ${statsPrefs.frequency}</div><div class="n" style="color:${change?.direction>0?'var(--good)':change?.direction<0?'var(--bad)':'var(--muted)'}">${m.incomplete?'—':escapeHtml(change?.text||'—')}</div><div class="small muted">${last?escapeHtml(statsPeriodLabel(last.key)+(last.partial?' · partial':'')):'No data'}</div></div><div class="box"><div class="l">Outstanding · selected invoices</div><div class="n">${amount(m.outstanding)}</div><div class="small muted">Overdue: ${amount(m.overdue)}</div></div><div class="box"><div class="l">Best period in range</div><div class="n">${best&&!m.incomplete?escapeHtml(statsPeriodLabel(best.key)):'—'}</div><div class="small muted">${best?amount(best.value):'—'}${best?.partial?' · partial':''}</div></div></div>
     <div class="stats-chart-card"><h3 style="margin:0 0 10px">${escapeHtml(statsPrefs.frequency==='month'?'Monthly':'Yearly')} company income <span class="muted small">${escapeHtml(statsPrefs.currency)}</span></h3>${incomeChart(m)}</div>
-    <div class="hint">Drafts excluded. Billed income follows invoice issue dates; received income follows payment dates. No recorded payment means no received income. Current partial periods compare the same elapsed dates. Custom partial periods have no growth comparison. Search and client filters apply to everything below.</div>
+    <div class="hint">Drafts excluded. Billed income follows invoice issue dates; received income follows payment dates. Manual Paid counts the full invoice as received (invoice date if no payment date exists); manual Outstanding counts it as unpaid. Automatic and Partial use recorded payments. Current partial periods compare the same elapsed dates. Custom partial periods have no growth comparison. Search and client filters apply to everything below.</div>
     ${m.invalid.size?`<div class="hint" style="margin-top:8px;color:var(--warn)">${m.invalid.size} invoice(s) contain missing or invalid invoice/payment dates; those dated events are excluded.</div>`:''}
     <details class="stats-fx" ${m.incomplete||statsFxError?'open':''}><summary>Exchange rates · ${escapeHtml(fxDate)}${manualCount?' · '+manualCount+' manual override(s)':''}</summary><p class="small muted">One fixed rate snapshot is applied to all periods, keeping the trend comparable. Invoices keep their original currencies. Reporting conversion is an estimate, not historical accounting conversion. Rates and report preferences are saved in this browser.</p><div class="row"><button class="btn" id="statFxRefresh" ${statsFxBusy?'disabled':''}>${statsFxBusy?'Loading rates…':'Refresh reference rates'}</button><button class="btn" id="statFxReset">Clear manual overrides</button><span class="small muted">ECB reference rates via Frankfurter</span></div>${statsFxError?`<p style="color:var(--warn)">${escapeHtml(statsFxError)}</p>`:''}<div class="stats-controls" style="margin-top:12px">${[...new Set(m.invoices.map(i=>i.currency||state.settings.defaultCurrency||'NZD'))].filter(c=>c!==statsPrefs.currency).map(c=>`<div><label>1 ${escapeHtml(c)} = ${escapeHtml(statsPrefs.currency)}</label><input type="number" min="0.00000001" step="any" data-fx-from="${escapeAttr(c)}" value="${reportRate(c)??''}" placeholder="Enter rate"><span class="small muted">${statsPrefs.overrides?.[c+'_'+statsPrefs.currency]?'Manual':'Reference'}</span></div>`).join('')}</div><button class="btn" id="statFxApply" style="margin-top:10px">Apply edited rates</button></details>
     <h3>Period details</h3><div style="overflow:auto"><table class="table"><thead><tr><th>Period</th><th>Income (${escapeHtml(statsPrefs.currency)})</th><th>vs previous period</th><th>Previous year</th><th>Invoices issued</th></tr></thead><tbody>${m.buckets.slice().reverse().map(r=>`<tr><td>${escapeHtml(statsPeriodLabel(r.key))}${r.partial?' <span class="tag draft">Partial</span>':''}</td><td class="mono">${amount(r.value)}</td><td style="color:${r.change?.direction>0?'var(--good)':r.change?.direction<0?'var(--bad)':'var(--muted)'}" title="${escapeAttr(r.change?.label||'Comparison unavailable')}">${m.incomplete?'—':escapeHtml(r.change?.text||'—')}</td><td class="mono">${r.yearValue===null?'—':amount(r.yearValue)}</td><td>${r.count}</td></tr>`).join('')||'<tr><td colspan="5">No data.</td></tr>'}</tbody></table></div>`;
