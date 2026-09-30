@@ -789,6 +789,7 @@
   }
 
   function computeInvoiceStatus(inv){
+    if (["draft","outstanding","partial","paid"].includes(inv.statusOverride)) return inv.statusOverride;
     const t = invoiceTotals(inv);
     if ((inv.items||[]).every(it => !String(it.desc||"").trim()) && t.total === 0) return "draft";
     const eps = 0.01;
@@ -1470,6 +1471,7 @@ function updateSelectedPill(){
         <div>
           <label>Status</label>
           <select id="invStatus">
+            <option value="auto">Automatic from payments</option>
             <option value="draft">Draft</option>
             <option value="outstanding">Sent / Outstanding</option>
             <option value="partial">Partial</option>
@@ -1651,14 +1653,14 @@ function updateSelectedPill(){
     const setVal = (id, v) => { const el=document.getElementById(id); if (el) el.value = v; };
     setVal("invClient", inv.clientId || "");
     setVal("invCurrency", inv.currency || state.settings.defaultCurrency);
-    setVal("invStatus", computeInvoiceStatus(inv));
+    setVal("invStatus", inv.statusOverride || "auto");
     setVal("qaIncludes", "yes");
 
     // bind inputs
     bind("invNumber", "input", e => { inv.number = e.target.value.trim(); save(); updateSelectedPill(); rerenderInvoicesIfNeeded(); });
     bind("invClient", "change", e => { inv.clientId = e.target.value; save(); rerenderInvoicesIfNeeded(); });
     bind("invCurrency", "change", e => { inv.currency = e.target.value; save(); rerenderInvoicesIfNeeded(); refreshInvoiceTotalsUi(inv); });
-    bind("invStatus", "change", e => { inv.status = e.target.value; save(); rerenderInvoicesIfNeeded(); });
+    bind("invStatus", "change", e => { inv.statusOverride = e.target.value === "auto" ? null : e.target.value; inv.status = computeInvoiceStatus(inv); save(); setView("invoices"); });
     bind("invIssue", "change", e => { inv.issueDate = e.target.value; save(); rerenderInvoicesIfNeeded(); });
     bind("invDue", "change", e => { inv.dueDate = e.target.value; save(); rerenderInvoicesIfNeeded(); });
     bind("invSource", "input", e => { inv.source = e.target.value; save(); rerenderInvoicesIfNeeded(); });
@@ -1737,7 +1739,7 @@ function updateSelectedPill(){
       let subtotal = total;
       if (includes && taxRate > 0) subtotal = total / (1 + taxRate/100);
       inv.items = [{ desc, qty: 1, unit: subtotal }];
-      inv.status = inv.status === "draft" ? "outstanding" : inv.status;
+      inv.status = inv.statusOverride || (inv.status === "draft" ? "outstanding" : inv.status);
       save(); setView("invoices");
     });
 
@@ -1747,6 +1749,7 @@ function updateSelectedPill(){
       copy.id = uid("inv");
       copy.number = newInvoice().number;
       copy.payments = [];
+      delete copy.statusOverride;
       copy.status = "draft";
       copy.issueDate = todayISO();
       copy.dueDate = addDaysISO(copy.issueDate, 14);
