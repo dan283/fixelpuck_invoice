@@ -902,26 +902,33 @@
     const logo=(theme==='light'?state.settings.logoLightJpegDataUrl:state.settings.logoJpegDataUrl)||state.settings.logoDataUrl||"";
     const img=logo.startsWith('data:image/')?`<img class='logo' src='${logo}' alt='Company logo'>`:'';
     const dark=theme==="dark";
-    // Print-safe palette: never rely on printing background graphics for text contrast.
-    // Firefox defaults to suppressing backgrounds, including CSS dark-page fills.
-    const ink='#19202a', secondary=dark?'#414c5c':'#58606e';
-    const panel=dark?'#e4e7ed':'#f3f5f7', tableHead=dark?'#d8dde5':'#e9edf1';
-    const rule=dark?'#c6cbd5':'#dfe3e8';
+    // The dark paper is an actual inline SVG graphic, not a CSS background.
+    // Firefox prints foreground SVG artwork even when "Print backgrounds" is off.
+    const ink=dark?'#f2f5fa':'#19202a';
+    const secondary=dark?'#b0bacb':'#58606e';
+    const panel=dark?'#252b36':'#f3f5f7';
+    const tableHead=dark?'#303845':'#e9edf1';
+    const rule=dark?'#434c5d':'#dfe3e8';
+    const paper=dark?'#151921':'#ffffff';
+    const pageGraphic=dark?`<svg class="print-paper" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 210 297" preserveAspectRatio="none" aria-hidden="true"><rect width="210" height="297" fill="#151921"/></svg>`:'';
     const markup=`<!doctype html><html><head><meta charset="utf-8"><title>${f(inv.number||'Invoice')} — PDF</title><style>
-      @page{size:A4;margin:14mm 15mm}*{box-sizing:border-box}html,body{margin:0;padding:0}
-      body{font:12px/1.45 Arial,Helvetica,sans-serif;color:${ink};background:white;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+      @page{size:A4;margin:0}*{box-sizing:border-box;-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important}
+      html{margin:0;padding:0;background:${paper};}
+      body{margin:0;padding:14mm 15mm;min-height:297mm;font:12px/1.45 Arial,Helvetica,sans-serif;color:${ink};background:${paper};}
+      .print-paper{position:fixed;top:0;left:0;width:210mm;height:297mm;z-index:0;pointer-events:none;display:block}
+      body>header,body>.two,body>.section,body>table,body>.totals,body>.footer{position:relative;z-index:1}
       header{display:flex;justify-content:space-between;align-items:center;gap:20px;border-bottom:4px solid #f27d0c;padding:0 0 21px;margin-bottom:25px}
       .logo{width:70px;max-height:70px;object-fit:contain}.company{display:flex;align-items:center;gap:15px}.brand{font-size:16px;font-weight:700}
       h1{margin:0;font-size:30px;letter-spacing:1px}.muted{color:${secondary}}
-      .two{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-bottom:24px}.panel{padding:16px;background:${panel};border:${dark?'1px solid #929ba9':'1px solid #e8eaee'};border-radius:7px}
+      .two{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-bottom:24px}.panel{padding:16px;background:${panel};border:1px solid ${rule};border-radius:7px;color:${ink}}
       .eyebrow{font-size:11px;letter-spacing:1.3px;font-weight:700;color:#f27d0c;margin-bottom:10px}.info-gap{height:3px}
-      table{width:100%;border-collapse:collapse;table-layout:fixed}th{text-align:left;padding:11px 9px;background:${tableHead};color:${ink};border-bottom:2px solid #667180;font-size:10px;letter-spacing:.5px}td{padding:10px 9px;border-bottom:1px solid ${rule};vertical-align:top;overflow-wrap:anywhere}
+      table{width:100%;border-collapse:collapse;table-layout:fixed}th{text-align:left;padding:11px 9px;background:${tableHead};color:${ink};border-bottom:2px solid ${rule};font-size:10px;letter-spacing:.5px}td{padding:10px 9px;border-bottom:1px solid ${rule};vertical-align:top;overflow-wrap:anywhere}
       .num{text-align:right;white-space:nowrap}.totals{margin:24px 0 25px auto;width:310px;max-width:100%;page-break-inside:avoid}
       .totals>div{display:flex;justify-content:space-between;gap:15px;padding:7px 0}.totals .grand{font-size:18px;font-weight:800;border-top:2px solid #f27d0c;margin-top:8px;padding-top:14px}
       .section{margin:22px 0;break-inside:avoid}.section-title{color:#f27d0c;font-weight:700;margin-bottom:7px;letter-spacing:.7px}
       .meta{font-size:11px;text-align:right;line-height:1.8}.work{white-space:pre-wrap}.footer{margin-top:30px;font-size:10px}
-      @media print{html,body{background:#fff!important;color:#19202a!important} .panel,.two,table,th,td{color:#19202a!important}body{min-height:auto}header,.two,.totals,.section{break-inside:avoid}thead{display:table-header-group}tr{break-inside:avoid}}
-    </style></head><body><header><div class='company'>${img}<div><div class='brand'>${f(biz.name||'INVOICE')}</div><div class='muted'>${f(inv.source||inv.what||'')}</div></div></div><div><h1>INVOICE</h1><div class='meta'>${f(inv.number)}<br>Issued: ${f(inv.issueDate)}<br>Due: ${f(inv.dueDate)}</div></div></header>
+      @media print{html,body{background:${paper}!important;color:${ink}!important}body{min-height:0}.print-paper{display:${dark?'block':'none'}!important}header,.two,.totals,.section{break-inside:avoid}thead{display:table-header-group}tr{break-inside:avoid}}
+    </style></head><body>${pageGraphic}<header><div class='company'>${img}<div><div class='brand'>${f(biz.name||'INVOICE')}</div><div class='muted'>${f(inv.source||inv.what||'')}</div></div></div><div><h1>INVOICE</h1><div class='meta'>${f(inv.number)}<br>Issued: ${f(inv.issueDate)}<br>Due: ${f(inv.dueDate)}</div></div></header>
     <div class='two'><div class='panel'><div class='eyebrow'>FROM</div>${info(biz)}</div><div class='panel'><div class='eyebrow'>BILL TO</div>${info(client,inv.approver?'Approver: '+inv.approver:'')}</div></div>
     ${work.length?`<div class='section'><div class='section-title'>WORK DETAILS</div><div class='work'>${work.map(lines).join('<br>')}</div></div>`:''}
     <table><thead><tr><th style='width:46%'>DESCRIPTION</th><th style='width:12%;text-align:right'>QTY</th><th style='width:20%;text-align:right'>UNIT PRICE</th><th style='width:22%;text-align:right'>AMOUNT</th></tr></thead><tbody>${rows}</tbody></table>
