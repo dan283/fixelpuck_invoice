@@ -756,6 +756,7 @@
       what: "",
       taxLabel,
       taxRate,
+      priceIncludesTax: true,
       terms: state.settings.defaultTerms,
       billing: {enabled:false,rate:0,days:0,hoursPerDay:8,hours:0,start:"",end:""},
       notes: "",
@@ -776,16 +777,20 @@
     return max + 1;
   }
 
+  // Modern invoices use gross (tax-inclusive) line prices. Existing invoices
+  // without priceIncludesTax retain their historic net-price interpretation.
   function invoiceTotals(inv){
-    const calculatedSubtotal = (inv.items||[]).reduce((s,it)=> s + parseNum(it.qty)*parseNum(it.unit), 0);
-    const taxRate = parseNum(inv.taxRate);
-    const imported=inv.sourceTotals?.enabled;
-    const subtotal = imported ? parseNum(inv.sourceTotals.subtotal) : calculatedSubtotal;
-    const tax = imported ? parseNum(inv.sourceTotals.tax) : subtotal * (taxRate/100);
-    const total = subtotal + tax;
-    const paid = (inv.payments||[]).reduce((s,p)=> s + parseNum(p.amount), 0);
-    const balance = total - paid;
-    return { subtotal, tax, total, paid, balance };
+    const itemsAmount = (inv.items||[]).reduce((sum,it)=>sum + parseNum(it.qty)*parseNum(it.unit),0);
+    const rate = Math.max(0,parseNum(inv.taxRate))/100;
+    const imported = inv.sourceTotals?.enabled;
+    const inclusive = inv.priceIncludesTax === true;
+    const subtotal = imported ? parseNum(inv.sourceTotals.subtotal) :
+      (inclusive ? itemsAmount/(1+rate) : itemsAmount);
+    const tax = imported ? parseNum(inv.sourceTotals.tax) :
+      (inclusive ? itemsAmount-subtotal : subtotal*rate);
+    const total = imported ? parseNum(inv.sourceTotals.total ?? (subtotal+tax)) : subtotal+tax;
+    const paid = (inv.payments||[]).reduce((sum,p)=>sum+parseNum(p.amount),0);
+    return {subtotal,tax,total,paid,balance:total-paid};
   }
 
   function computeInvoiceStatus(inv){
@@ -878,7 +883,58 @@
     if(show.details!==false && b.details) for(const paragraph of b.details.split("\n")){const words=paragraph.split(/\s+/);let line="";for(const w of words){if((line+" "+w).length>85){lines.push(line);line=w;}else line+=(line?" ":"")+w;}if(line)lines.push(line);}
     return lines;
   }
+  // Render a real HTML invoice and let the browser's PDF print renderer
+  // produce the PDF. This avoids the incomplete hand-coded PDF stream.
   function exportInvoicePdf(inv, theme = "dark") {
+    const popup = window.open("", "_blank");
+    if(!popup){toast("Allow pop-ups to export the PDF");return;}
+    const biz = inv.businessSnapshot || state.business || {};
+    const client = state.clients.find(c=>c.id===inv.clientId) || {};
+    const t = invoiceTotals(inv), taxName=inv.taxLabel||"GST";
+    const f = v=>escapeHtml(String(v??""));
+    const money=v=>f(fmtMoney(v,inv.currency));
+    const lines=v=>f(v).replace(/\n/g,"<br>");
+    const info=(party,extra="")=>[party.name,party.director,party.address,party.taxId?"Tax ID: "+party.taxId:"",party.email,party.phone,extra].filter(Boolean).map(lines).join("<div class='info-gap'></div>");
+    const totalColumn=(qty,unit)=>parseNum(qty)*parseNum(unit);
+    const rows=(inv.items||[]).map(item=>`<tr><td>${lines(item.desc)}</td><td class='num'>${f(item.qty)} ${f(item.quantityUnit||"")}</td><td class='num'>${money(item.unit)}</td><td class='num'>${money(totalColumn(item.qty,item.unit))}</td></tr>`).join("");
+    const work=billingLines(inv);
+    const payments=(inv.payments||[]).map(pay=>`<tr><td>${f(pay.date)}</td><td>${lines(pay.note)}</td><td class='num'>${money(pay.amount)}</td></tr>`).join("");
+    const logo=(theme==='light'?state.settings.logoLightJpegDataUrl:state.settings.logoJpegDataUrl)||state.settings.logoDataUrl||"";
+    const img=logo.startsWith('data:image/')?`<img class='logo' src='${logo}' alt='Company logo'>`:'';
+    const dark=theme==="dark";
+    // Print-safe palette: never rely on printing background graphics for text contrast.
+    // Firefox defaults to suppressing backgrounds, including CSS dark-page fills.
+    const ink='#19202a', secondary=dark?'#414c5c':'#58606e';
+    const panel=dark?'#e4e7ed':'#f3f5f7', tableHead=dark?'#d8dde5':'#e9edf1';
+    const rule=dark?'#c6cbd5':'#dfe3e8';
+    const markup=`<!doctype html><html><head><meta charset="utf-8"><title>${f(inv.number||'Invoice')} — PDF</title><style>
+      @page{size:A4;margin:14mm 15mm}*{box-sizing:border-box}html,body{margin:0;padding:0}
+      body{font:12px/1.45 Arial,Helvetica,sans-serif;color:${ink};background:white;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+      header{display:flex;justify-content:space-between;align-items:center;gap:20px;border-bottom:4px solid #f27d0c;padding:0 0 21px;margin-bottom:25px}
+      .logo{width:70px;max-height:70px;object-fit:contain}.company{display:flex;align-items:center;gap:15px}.brand{font-size:16px;font-weight:700}
+      h1{margin:0;font-size:30px;letter-spacing:1px}.muted{color:${secondary}}
+      .two{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-bottom:24px}.panel{padding:16px;background:${panel};border:${dark?'1px solid #929ba9':'1px solid #e8eaee'};border-radius:7px}
+      .eyebrow{font-size:11px;letter-spacing:1.3px;font-weight:700;color:#f27d0c;margin-bottom:10px}.info-gap{height:3px}
+      table{width:100%;border-collapse:collapse;table-layout:fixed}th{text-align:left;padding:11px 9px;background:${tableHead};color:${ink};border-bottom:2px solid #667180;font-size:10px;letter-spacing:.5px}td{padding:10px 9px;border-bottom:1px solid ${rule};vertical-align:top;overflow-wrap:anywhere}
+      .num{text-align:right;white-space:nowrap}.totals{margin:24px 0 25px auto;width:310px;max-width:100%;page-break-inside:avoid}
+      .totals>div{display:flex;justify-content:space-between;gap:15px;padding:7px 0}.totals .grand{font-size:18px;font-weight:800;border-top:2px solid #f27d0c;margin-top:8px;padding-top:14px}
+      .section{margin:22px 0;break-inside:avoid}.section-title{color:#f27d0c;font-weight:700;margin-bottom:7px;letter-spacing:.7px}
+      .meta{font-size:11px;text-align:right;line-height:1.8}.work{white-space:pre-wrap}.footer{margin-top:30px;font-size:10px}
+      @media print{html,body{background:#fff!important;color:#19202a!important} .panel,.two,table,th,td{color:#19202a!important}body{min-height:auto}header,.two,.totals,.section{break-inside:avoid}thead{display:table-header-group}tr{break-inside:avoid}}
+    </style></head><body><header><div class='company'>${img}<div><div class='brand'>${f(biz.name||'INVOICE')}</div><div class='muted'>${f(inv.source||inv.what||'')}</div></div></div><div><h1>INVOICE</h1><div class='meta'>${f(inv.number)}<br>Issued: ${f(inv.issueDate)}<br>Due: ${f(inv.dueDate)}</div></div></header>
+    <div class='two'><div class='panel'><div class='eyebrow'>FROM</div>${info(biz)}</div><div class='panel'><div class='eyebrow'>BILL TO</div>${info(client,inv.approver?'Approver: '+inv.approver:'')}</div></div>
+    ${work.length?`<div class='section'><div class='section-title'>WORK DETAILS</div><div class='work'>${work.map(lines).join('<br>')}</div></div>`:''}
+    <table><thead><tr><th style='width:46%'>DESCRIPTION</th><th style='width:12%;text-align:right'>QTY</th><th style='width:20%;text-align:right'>UNIT PRICE</th><th style='width:22%;text-align:right'>AMOUNT</th></tr></thead><tbody>${rows}</tbody></table>
+    <div class='totals'><div><span>Subtotal (excl. ${f(taxName)})</span><strong>${money(t.subtotal)}</strong></div><div><span>${f(taxName)} (${f(inv.taxRate||0)}%)</span><strong>${money(t.tax)}</strong></div><div class='grand'><span>TOTAL</span><span>${money(t.total)}</span></div><div><span>Paid</span><strong>${money(t.paid)}</strong></div><div><span>Balance due</span><strong>${money(t.balance)}</strong></div></div>
+    ${payments?`<div class='section'><div class='section-title'>PAYMENTS</div><table><tbody>${payments}</tbody></table></div>`:''}
+    ${inv.terms?`<div class='section'><div class='section-title'>PAYMENT TERMS</div><div>${lines(inv.terms)}</div></div>`:''}
+    <div class='footer muted'>${f(inv.number)} · ${f(inv.currency)} · ${f(inv.what||'')}</div>
+    <script>window.addEventListener('load',()=>setTimeout(()=>window.print(),250));<\/script></body></html>`;
+    popup.document.open(); popup.document.write(markup);popup.document.close();
+    toast("Invoice opened for Save as PDF — choose PDF in the print dialog");
+  }
+
+  function exportInvoicePdfLegacy(inv, theme = "dark") {
     // Must be synchronous for browser gesture. If logo isn't ready, export without it.
     const logoDataUrl = (theme === "light" ? state.settings.logoLightJpegDataUrl : state.settings.logoJpegDataUrl) || "";
     const logoBytes = logoDataUrl.startsWith("data:image/jpeg") ? dataUrlBytes(logoDataUrl).bytes : null;
@@ -1042,7 +1098,7 @@ const headLeft = PAD + (logoObj ? (logoSize + 18) : 0);
     pdfText(tableX + 8, tableTop - 15, "DESCRIPTION", 9, tableHeaderText);
     pdfText(tableX + colDesc + 8, tableTop - 15, "QTY", 9, tableHeaderText);
     pdfText(tableX + colDesc + colQty + 8, tableTop - 15, "PRICE", 9, tableHeaderText);
-    pdfText(tableX + colDesc + colQty + colUnit + 8, tableTop - 15, "TOTAL (excl. tax)", 9, tableHeaderText);
+    pdfText(tableX + colDesc + colQty + colUnit + 8, tableTop - 15, inv.priceIncludesTax===true ? "TOTAL (incl. tax)" : "TOTAL (excl. tax)", 8, tableHeaderText);
 
     let y = tableTop - headerH;
     const items = (inv.items || []).filter(it => String(it.desc||"").trim() || parseNum(it.unit) || parseNum(it.qty));
@@ -1068,8 +1124,7 @@ const headLeft = PAD + (logoObj ? (logoSize + 18) : 0);
 
       const qty = parseNum(it.qty);
       const unit = parseNum(it.unit);
-      // Unit price is treated as ex-GST; line totals in the PDF are shown incl. GST
-      // to match the invoice totals.
+      // Unit and line prices follow invoice price mode.
       const gstRatePct = parseNum(inv.taxRate ?? state.settings.defaultTaxRate ?? 0);
       const gstMul = 1 + (gstRatePct ? (gstRatePct/100) : 0);
       const lineTotal = qty * unit;
@@ -1163,7 +1218,7 @@ const headLeft = PAD + (logoObj ? (logoSize + 18) : 0);
     }
 
     const parts = [];
-    parts.push(strBytes("%PDF-1.4\n%\xE2\xE3\xCF\xD3\n"));
+    parts.push(strBytes("%PDF-1.4\n%InvoiceSuite\n"));
 
     const xref = [];
     let offset = parts[0].length;
@@ -1548,13 +1603,14 @@ function updateSelectedPill(){
       <div class="row" style="justify-content:space-between">
         <div>
           <h3 style="margin:0 0 6px; font-size:13px; letter-spacing:.6px; text-transform:uppercase; color:#d8dde6">Line Items</h3>
-          <div class="small muted">Use Quick Amount below for fast one-liners.</div>
+          <div class="small muted">Enter the final amount the customer pays. GST is extracted automatically.</div>
         </div>
         <div class="right-actions">
           <button class="btn" id="btnAddItem">+ Add item</button>
         </div>
       </div>
 
+      <label style="display:flex;align-items:center;gap:9px;margin:12px 0"><input id="invPricesInclusive" type="checkbox" style="width:auto" ${inv.priceIncludesTax===true?'checked':''}> Line item prices include ${escapeHtml(inv.taxLabel||'GST')} (gross / final customer price)</label>
       ${itemsRows || ""}
 
       <div class="sep"></div>
@@ -1584,10 +1640,11 @@ function updateSelectedPill(){
           <div class="sep"></div>
 
           <div class="row" style="justify-content:space-between">
-            <button class="btn good" id="btnAddPayment">+ Add payment</button>
+            <div class="row"><button class="btn good" id="btnAddPayment">+ Record received payment</button>
+            ${payments.length?`<button class="btn danger" id="btnClearPayments">Clear recorded payments</button>`:''}</div>
             <div class="right-actions">
-              <button class="btn" id="btnExportPdfLight">Export Light PDF</button>
-              <button class="btn primary" id="btnExportPdf">Export Dark PDF</button>
+              <button class="btn" id="btnExportPdfLight">Save Light PDF…</button>
+              <button class="btn primary" id="btnExportPdf">Save Dark PDF…</button>
             </div>
           </div>
 
@@ -1617,14 +1674,14 @@ function updateSelectedPill(){
               <input id="qaDesc" placeholder="e.g. Renders, trailer, base, fix…" value="${escapeAttr(inv.what || inv.source || "")}"/>
             </div>
             <div>
-              <label>Total</label>
+              <label>Final invoice amount (incl. tax)</label>
               <input id="qaTotal" type="number" step="0.01" value="${escapeAttr(t.total || 0)}"/>
             </div>
             <div>
               <label>Includes tax?</label>
               <select id="qaIncludes">
                 <option value="yes">Yes (recommended)</option>
-                <option value="no">No (add tax on top)</option>
+                <option value="no">No (net amount; add tax)</option>
               </select>
             </div>
           </div>
@@ -1680,12 +1737,21 @@ function updateSelectedPill(){
     for(const k of ['start','end','rate','days','hoursPerDay','hours']) bind("bill_"+k,"input",e=>{inv.billing[k]=['start','end'].includes(k)?e.target.value:Math.max(0,parseNum(e.target.value));save();});
     bind("billCalc","click",()=>{inv.billing.hours=inv.billing.days*inv.billing.hoursPerDay;save();setView("invoices");});
     bind("billApply","click",()=>{const b=inv.billing;if(!(b.hours>0&&b.rate>0)){toast("Enter positive total hours and hourly rate");return;}if(b.start&&b.end&&b.end<b.start){toast("Period end must follow start");return;}b.enabled=true;if(inv.sourceTotals)inv.sourceTotals.enabled=false;const item={desc:(inv.what||"Hourly services")+" (hours)",qty:b.hours,unit:b.rate,billingItem:true,quantityUnit:"hours"};const i=inv.items.findIndex(x=>x.billingItem);if(i>=0)inv.items[i]=item;else if(inv.items.length===1&&!inv.items[0].desc&&!inv.items[0].unit)inv.items=[item];else inv.items.push(item);save();setView("invoices");});
+    bind("invPricesInclusive","change",e=>{inv.priceIncludesTax=e.target.checked;if(inv.sourceTotals)inv.sourceTotals.enabled=false;save();setView("invoices");});
     // items fields
     document.querySelectorAll("[data-item]").forEach(row => {
       const idx = parseInt(row.getAttribute("data-item"),10);
       row.querySelectorAll("input[data-k]").forEach(inp => {
         const k = inp.getAttribute("data-k");
         inp.addEventListener("input", () => {
+          if(k === "unit" && inv.priceIncludesTax !== true){
+            // A newly entered price is a final price; migrate the existing net
+            // line prices to gross before assigning it.
+            const multiplier = 1 + Math.max(0,parseNum(inv.taxRate))/100;
+            inv.items.forEach((it,j)=>{if(j!==idx)it.unit=parseNum(it.unit)*multiplier;});
+            inv.priceIncludesTax=true;
+            const toggle=document.getElementById("invPricesInclusive");if(toggle)toggle.checked=true;
+          }
           inv.items[idx][k] = (k === "qty" || k === "unit") ? parseNum(inp.value) : inp.value;
           if(k!=="desc" && inv.sourceTotals) inv.sourceTotals.enabled=false;
           save();
@@ -1718,14 +1784,31 @@ function updateSelectedPill(){
       save(); setView("invoices");
     });
 
+    bind("btnClearPayments", "click", () => {
+      if(!inv.payments?.length)return;
+      if(!confirm(`Remove all ${inv.payments.length} recorded payment(s) from ${inv.number}?\n\nOnly do this if those payments were entered incorrectly. This will make the amount outstanding again.`))return;
+      inv.payments=[];
+      // Automatic status follows payments; a previously overridden Paid state must not survive a reset.
+      if(inv.statusOverride==='paid'||inv.statusOverride==='partial')inv.statusOverride=null;
+      inv.status='outstanding';
+      save();setView("invoices");
+    });
     bind("btnAddPayment", "click", () => {
-      const amt = prompt("Payment amount:");
+      const current=invoiceTotals(inv);
+      if(current.balance<=0.005){
+        toast("Nothing outstanding: remove any incorrectly recorded payments below before recording a new one.");
+        return;
+      }
+      const amt = prompt(`Payment RECEIVED (not the invoice price).\nOutstanding: ${fmtMoney(current.balance,inv.currency)}\nEnter amount actually received:`, String(Math.round(current.balance*100)/100));
       if (amt === null) return;
-      const amount = parseNum(amt);
-      const note = prompt("Payment note (optional):") || "";
-      inv.payments.push({ date: todayISO(), amount, note });
-      inv.status = computeInvoiceStatus(inv);
-      save(); setView("invoices");
+      const amount=Number(String(amt).replace(/,/g,''));
+      if(!Number.isFinite(amount)||amount<=0||amount>current.balance+0.005){toast("Enter a positive payment no greater than the outstanding balance.");return;}
+      const note=prompt("Payment note (optional):")||"";
+      inv.payments ||= [];
+      inv.payments.push({date:todayISO(),amount,note});
+      if(inv.statusOverride==='outstanding'||inv.statusOverride==='draft')inv.statusOverride=null;
+      inv.status=computeInvoiceStatus(inv);
+      save();setView("invoices");
     });
 
     bind("btnExportPdf", "click", () => exportInvoicePdf(inv, "dark"));
@@ -1736,9 +1819,9 @@ function updateSelectedPill(){
       const total = parseNum(document.getElementById("qaTotal").value);
       const includes = document.getElementById("qaIncludes").value === "yes";
       const taxRate = parseNum(inv.taxRate);
-      let subtotal = total;
-      if (includes && taxRate > 0) subtotal = total / (1 + taxRate/100);
-      inv.items = [{ desc, qty: 1, unit: subtotal }];
+      inv.priceIncludesTax = includes;
+      inv.items = [{ desc, qty: 1, unit: total }];
+      if(inv.sourceTotals)inv.sourceTotals.enabled=false;
       inv.status = inv.statusOverride || (inv.status === "draft" ? "outstanding" : inv.status);
       save(); setView("invoices");
     });
@@ -2178,7 +2261,7 @@ function updateSelectedPill(){
         <ul>
           <li><b>Invoices</b> support line items, tax, and multiple payments (partial paid).</li>
           <li><b>Dashboard</b> shows paid income, outstanding, and breakdown by client + source + what.</li>
-          <li><b>PDF export</b> downloads a real PDF file (no print dialog). Use <b>Export Dark PDF</b> for the Blender-style look, or <b>Export Light PDF</b> for a white-background invoice.</li>
+          <li><b>PDF export</b> opens a print-ready A4 invoice. Select <b>Save to PDF</b> in your browser print dialog. Both dark and light styles are supported.</li>
           <li>To embed the logo in PDFs: go to <b>Settings</b> and upload your logo once.</li>
         </ul>
       </div>
