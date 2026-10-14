@@ -419,7 +419,7 @@
     setView(state.view);applyBrand();ensureLogoJpegCache();
   }
   class SharedInvoices {
-    constructor(client){this.client=client;this.base=new Map();this.conflicts=new Map();this.ready=false;this.busy=false;this.pulling=false;this.connected=false;this.error='';this.timer=null;this.remoteTimer=null;this.channel=null;this.session=null;this.stopped=false;}
+    constructor(client){this.client=client;this.base=new Map();this.conflicts=new Map();this.ready=false;this.busy=false;this.pulling=false;this.connected=false;this.error='';this.timer=null;this.remoteTimer=null;this.channel=null;this.session=null;this.stopped=false;this.lastPullAt=0;this.wasSubscribed=false;this.visibilityHandler=null;}
     diff(){const rows=localRecords();const changes=new Map();for(const [key,row] of rows){const base=this.base.get(key);if(!base || !sameRecord(row,base))changes.set(key,row);}for(const [key,row]of this.base)if(!rows.has(key)&&!row.deleted&&(row.kind==='invoice'||row.kind==='client'))changes.set(key,{kind:row.kind,id:row.id,data:row.data,deleted:true});return changes;}
     draftKey(){return 'invoiceSuite.pending.'+new URL(SUPABASE_URL).hostname+'.'+this.session?.user.id;}
     persistDraft(){
@@ -460,7 +460,15 @@
       document.getElementById('cloudGate').hidden=true;document.querySelector('.app').inert=false;
       document.getElementById('cloudAccount').textContent=this.session.user.email;
       renderSharedChanges(true);this.subscribe();this.status();
-      this.poll=setInterval(()=>this.pull(),15000);
+      // No background polling: five idle tabs used to download the full dataset
+      // every 15 seconds each. Realtime notifications drive normal refreshes.
+      this.visibilityHandler=()=>{
+        if(document.visibilityState==='visible' && Date.now()-this.lastPullAt>60000){
+          clearTimeout(this.remoteTimer);
+          this.remoteTimer=setTimeout(()=>this.pull(),350);
+        }
+      };
+      document.addEventListener('visibilitychange',this.visibilityHandler);
     }
     async initialize(){
       this.ready=true;this.error='';showCloudGate('initialize');document.getElementById('initializeCloud').disabled=true;
@@ -470,15 +478,29 @@
     }
     subscribe(){
       this.channel=this.client.channel('invoice-suite-records').on('postgres_changes',{event:'*',schema:'public',table:'invoice_records'},()=>{clearTimeout(this.remoteTimer);this.remoteTimer=setTimeout(()=>this.pull(),350);}).subscribe(status=>{
-        if(this.stopped)return;this.connected=status==='SUBSCRIBED';this.status();if(this.connected)this.pull();
+        if(this.stopped)return;
+        const wasConnected=this.connected;
+        this.connected=status==='SUBSCRIBED';this.status();
+        // Initial data was already loaded in start(). Only refresh after an
+        // actual disconnection, which may have missed remote changes.
+        if(this.connected && this.wasSubscribed && !wasConnected){
+          clearTimeout(this.remoteTimer);
+          this.remoteTimer=setTimeout(()=>this.pull(),500);
+        }
+        if(this.connected)this.wasSubscribed=true;
       });
     }
     async pull(){
-      if(!this.ready||this.stopped||this.pulling)return;
+      if(!this.ready||this.stopped)return;
+      if(this.pulling){
+        clearTimeout(this.remoteTimer);
+        this.remoteTimer=setTimeout(()=>this.pull(),700);
+        return;
+      }
       if(this.busy){clearTimeout(this.remoteTimer);this.remoteTimer=setTimeout(()=>this.pull(),500);return;}
       this.pulling=true;
       try{
-        const rows=await this.rows();if(this.stopped)return;const dirty=this.diff();let changed=false,logoChanged=false;
+        const rows=await this.rows();this.lastPullAt=Date.now();if(this.stopped)return;const dirty=this.diff();let changed=false,logoChanged=false;
         for(const row of rows){const key=row.kind+':'+row.id,base=this.base.get(key);if(base && row.revision<=base.revision)continue;
           const local=dirty.get(key);
           if(local && !sameRecord(local,row)){this.conflicts.set(key,row);continue;}
@@ -514,7 +536,7 @@
       finally{this.busy=false;this.persistDraft();this.status();if(!this.error && [...this.diff().keys()].some(k=>!this.conflicts.has(k))){clearTimeout(this.timer);this.timer=setTimeout(()=>this.flush(),650);}}
     }
     resolve(key,choice){const row=this.conflicts.get(key);if(!row)return;if(choice==='shared'){applyRecord(row);persistOnly();renderSharedChanges(true);}this.base.set(key,row);this.conflicts.delete(key);this.persistDraft();this.changed();this.status();}
-    async stop(){this.stopped=true;this.ready=false;clearTimeout(this.timer);clearTimeout(this.remoteTimer);clearInterval(this.poll);if(this.channel)await this.client.removeChannel(this.channel);}
+    async stop(){this.stopped=true;this.ready=false;clearTimeout(this.timer);clearTimeout(this.remoteTimer);if(this.visibilityHandler){document.removeEventListener('visibilitychange',this.visibilityHandler);this.visibilityHandler=null;}if(this.channel)await this.client.removeChannel(this.channel);}
   }
   function showCloudGate(mode='login',message=''){
     const gate=document.getElementById('cloudGate');gate.hidden=false;document.querySelector('.app').inert=true;
